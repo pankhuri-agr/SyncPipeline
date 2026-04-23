@@ -1,0 +1,12 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sync-pipeline:latest
+    container_name: sync-pipeline
+    # Default CMD runs the demo. Override with:
+    #   docker compose run --rm pipeline python -m src.main --config-dir config
+    # to run the long-lived entry point instead.
+    environment:
+      PYTHONPATH: /app

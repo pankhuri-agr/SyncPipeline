@@ -1,0 +1,39 @@
+{
+  "tenants": {
+    "tenant_acme": {
+      "routes": [
+        {
+          "destination_id": "id_salesforce",
+          "provider": "salesforce",
+          "record_type": "contact",
+          "field_map": {
+            "fields.email": "Email",
+            "fields.first_name": "FirstName",
+            "fields.last_name": "LastName",
+            "fields.phone": "Phone",
+            "owner_id": "OwnerId"
+          },
+          "required_fields": ["fields.email"]
+        },
+        {
+          "destination_id": "id_hubspot",
+          "provider": "hubspot",
+          "record_type": "contact",
+          "field_map": {
+            "fields.email": "email",
+            "fields.first_name": "firstname",
+            "fields.last_name": "lastname",
+            "fields.phone": "phone"
+          },
+          "required_fields": ["fields.email"]
+        },
+        {
+          "destination_id": "id_gmail",
+          "provider": "gmail",
+          "record_type": "email",
+          "field_map": {}
+        }
+      ]
+    }
+  }
+}

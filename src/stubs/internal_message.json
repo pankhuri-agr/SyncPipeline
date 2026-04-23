@@ -1,0 +1,17 @@
+{
+  "event_id": "evt_abc123",
+  "tenant_id": "tenant_acme",
+  "record_id": "rec_000042",
+  "record_type": "contact",
+  "operation": "update",
+  "source_version": "v3",
+  "payload": {
+    "fields": {
+      "email": "abc@example.com",
+      "first_name": "abc",
+      "last_name": "xyz",
+      "phone": "+91-9876543210"
+    },
+    "owner_id": "user_99"
+  }
+}
