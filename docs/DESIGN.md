@@ -36,24 +36,24 @@ I am choosing Internal to External data sync process for this assignment. The fo
 
 ### Functional Requirements
 
-1. CRUD synchronization between two systems : The service synchronizes Create, Update, and Delete operations between an internal system (System A, fully owned) and external systems (System B, CRMs accessible only via API). READ is out of scope for this assignment. Only internal to external synchronization is in scope of this assignment.
-2. Multi-tenant : The service handles many tenants concurrently. Each tenant's data, rate limits are logically isolated from other tenants.
-3. Multiple CRM provider support :  The service integrates with multiple external CRM providers (e.g., Salesforce, HubSpot). Provider-specific differences (schema, rate limits, response modes, idempotency primitives) are encapsulated behind pluggable interfaces so new providers can be added without core changes.
-4. Pluggable schema transformation layer : Data is transformed between internal and external schemas before being written. The transformation layer is pluggable per-provider and per-direction.
-5. Record-level ordering : Operations on the same record must be applied to the destination in the order they occurred at the source. Operations on different records may be applied in parallel.
-6. Per-tenant rate limiting : External API rate limits are enforced per-tenant, per-provider. Without per-tenant scoping, one hot tenant would consume the shared budget and starve quieter tenants.
-7. Idempotent delivery : Each sync operation is delivered exactly once in effect, even across retries, transient failures, and crash recovery. Duplicate submissions must not cause duplicate writes on the destination.
-8. Input/output schema validation : All events entering the pipeline and all payloads sent to external systems are validated against predefined schemas. Validation failures are non-retryable.
-9. One-to-many destination routing : A single record change in the source can be configured to sync to multiple external CRMs, each with its own provider, schema transformation, and rate limit. Each destination is an independent delivery.
+1. The service synchronizes Create, Update, and Delete operations between an internal system (System A, fully owned) and external systems (System B, CRMs accessible only via API). READ is out of scope for this assignment. Only internal to external synchronization is in scope of this assignment.
+2. The service handles many tenants concurrently. Each tenant's data, rate limits are stored and processed separately from other tenants.
+3. The service integrates with multiple external CRM providers. Provider-specific differences (schema, rate limits, etc) are encapsulated behind pluggable interfaces so new providers can be added without core changes.
+4. Data is transformed between internal and external schemas before being written. The transformation layer is pluggable per-provider and per-direction.
+5. Operations on the same record must be applied to the destination in the order they occurred at the source. Operations on different records may be applied in parallel.
+6. External API rate limits are enforced per-tenant, per-provider. Without per-tenant scoping, one hot tenant would consume the shared quota and starve quieter tenants.
+7. Each sync operation is delivered exactly once in effect, even across retries, transient failures, and crash recovery. Duplicate submissions must not cause duplicate writes on the destination.
+8. All events entering the pipeline and all payloads sent to external systems are validated against predefined schemas. Validation failures are non-retryable.
+9. A single record change in the source can be configured to sync to multiple external CRMs, each with its own provider, schema transformation, and rate limit. Each destination is an independent delivery. This configuration is maintained as part of this service.
 
 ### Non-Functional Requirements
 
-1. Throughput: 300M events/day with 10× burst absorption. Steady-state average ~3,500 events/sec. Traffic is bursty, not smoothed — for this assignment, assume a 10× burst factor (~35,000 events/sec peak). The pipeline must absorb and smooth these peaks while respecting downstream rate limits; it cannot propagate burstiness directly to external APIs.
+1. Throughput: 300M events/day (provided) translates to average ~3,500 events/sec. Traffic is bursty, not smoothed — for this assignment, assuming a 10× burst factor (~35,000 events/sec peak). Goal of service is to absorb and smooth these peaks while respecting downstream rate limits; it cannot propagate burstiness directly to external APIs.
 2. Tiered latency - "Near real-time" - I have classified it based on data types being synced. Any tenant can have at least one or all data types.
    1. Critical: p95 < 2s
    2. Standard: p95 < 5s
    3. Background: p95 < 15s
-   For the sake of simplicity i have implemented considering single data type. But designed for all 3.
+   For the sake of simplicity I have implemented considering single data type.
 3. Availability: 99.9%. Availability is tracked independently per tenant and per provider.
 4. Failure isolation - A single failing tenant, degraded provider, or malformed record must not degrade service for other tenants or providers. 
 
@@ -61,16 +61,17 @@ I am choosing Internal to External data sync process for this assignment. The fo
 ### Assumptions
 1. Upstream system exists and is multi-tenant - A pre-existing internal system handles multi-tenant data operations. This sync service consumes change events from it; it does not replace it.
 2. Trigger/rule engine is out of scope - The logic that decides which state changes trigger a sync (and to which CRMs) lives upstream, outside this service. Those rules are assumed to be configurable and extensible, but the engine itself is not part of this assignment.
-3. Events arriving at this service are pre-decided sync intents. By the time an event reaches this pipeline, the upstream trigger engine has already decided it must be delivered. The pipeline does not filter, deduplicate, or re-evaluate rules — it delivers.
-4. READ operations are not synced. The problem statement lists READ as an operation type, but in practice READ is rarely a sync intent — it is a side-effect of reconciliation. Scoped out for simplicity.
+3. Events arriving at this service are pre-decided sync intents. By the time an event reaches this pipeline, the upstream trigger engine has already decided it must be delivered. The pipeline does not filter, deduplicate, or re-evaluate rules — goal is to deliver every message received to external system reliably.
+4. READ operations are not synced. The problem statement lists READ as an operation type. Scoped out for simplicity.
 5. Rate limits vary per tenant. Each (tenant, provider) pair has its own rate-limit budget. Enterprise tenants may negotiate higher limits than the provider default; config supports per-tenant overrides.
 6. Conflict resolution is out of scope. When a write to an external system would conflict with concurrent changes (version mismatch), this service rejects the write and surfaces the conflict. Deciding who wins is handled by an upstream reconciliation service.
 7. Upstream ordering is preserved at the source. The internal system emits events for the same record in the order operations occurred.
-8. Authentication and credential management are out of scope. External API credentials are assumed provided via a CredentialProvider abstraction.
+8. Authentication and credential management are out of scope. External API credentials are assumed provided and its management is not in scope.
+9. I have not mentioned about observability in this document but it is a necessity for this scale. 
 
-## Component Diagram
+## Context Diagram
 
-[ToBeReplaced](IMG_8218.HEIC)
+![C1](C1OR.png)
 
 
 ## Sync Service
@@ -105,11 +106,12 @@ We need a reliable and durable way to pass these messages. Let's compare the 3 a
 #### DB -
 1. Schema limitation introduced.
 2. Write / read will have similar scale - maintaining 35000 events/sec on db can be challenging.
-3. (Pros) Audit history / status of records can be maintained using db.
+3. Db only provides commit (storage) - it will be reinventing services like kafka again. (How do consumers read parallely? How to partition effectively?)
+4. (Pros) Audit history / status of records can be maintained using db.
 
 #### FIFO Queues (SQS) - 
 1. Normal FIFO SQS has 300 events/sec rate limit, but in some regions it can be increased (these regions will contribute to latency).
-2. Creating 3 new queues for each tenant and maintaining them will be hard on scale.
+2. Creating new queues for each tenant and maintaining them will be hard on scale.
 3. No retry support.
 4. (Pros) Message Delay and DLQ support out of the box.
 
@@ -117,7 +119,7 @@ We need a reliable and durable way to pass these messages. Let's compare the 3 a
 1. Partitions are ordered.
 2. Durable, replayable.
 3. Adding new tenants will not hurt.
-4. No limitation due to rate limits. (enforced by internal team so can be changed per usage)
+4. No limitation due to rate limits. (enforced by internal team so can be changed per usage).
 
 To maintain the scale and growing demand, kafka is selected otherwise FIFO SQS can be leveraged.
 
