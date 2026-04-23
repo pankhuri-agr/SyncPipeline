@@ -71,12 +71,18 @@ I am choosing Internal to External data sync process for this assignment. The fo
 
 ## Context Diagram
 
+Uploaded xml also
+
 ![C1](C1OR.png)
 
 
-## Sync Service
+## Container Diagram
 
-[ToBeReplaced](IMG_8219.HEIC)
+Uploaded xml also
+
+![C2](C2OR.png)
+
+## Sync Service Design Decisions
 
 ### Service Invocation (Push vs Pull)
 
@@ -96,7 +102,7 @@ Now lets compare the pros and cons of both push vs pull :
 Pull is the selected method here as it makes consumer more self reliant and removes dependency from sync service.
 So internal systems will write records / messages in order into a durable log.
 
-### Durable log (DB/ FIFO SQS/ Kaka)
+### Message transmission (DB/ FIFO SQS/ Kaka)
 
 Internal system after filtering the message using rules , need to pass the messages to sync service while maintaing order. 
 Thus, a system where sync service exposes an api for receiving messages while persisting messages at their end will not work as order will not be guaranteed.
@@ -105,7 +111,7 @@ We need a reliable and durable way to pass these messages. Let's compare the 3 a
 
 #### DB -
 1. Schema limitation introduced.
-2. Write / read will have similar scale - maintaining 35000 events/sec on db can be challenging.
+2. Write / read will have similar scale - maintaining 35000 events/sec on db can be challenging. Needs sharding.
 3. Db only provides commit (storage) - it will be reinventing services like kafka again. (How do consumers read parallely? How to partition effectively?)
 4. (Pros) Audit history / status of records can be maintained using db.
 
@@ -123,7 +129,7 @@ We need a reliable and durable way to pass these messages. Let's compare the 3 a
 
 To maintain the scale and growing demand, kafka is selected otherwise FIFO SQS can be leveraged.
 
-#### Kafka config
+#### Kafka config 1
 1. Separate topic per tenant : 
    1. Each tenant will have N partitions. 
    2. record_id will be hashed to a partition.
@@ -137,22 +143,81 @@ To maintain the scale and growing demand, kafka is selected otherwise FIFO SQS c
 
 I am preferring option 1 due to mentioned reasons.
 
-### Consumers
+### Kafka config 2
+1. Separate topic for tenant : partition key = external_system_id#record_id
+2. Separate topic for external system : partition key = tenant_id#record_id
+
+I am preferring option 1 due to tenant data isolation and straight forward implementation of tenant level limits.
+
+## Sync State DB
+
+### Purpose
+1. Track lifecycle of any record in sync service. Used for debugging.
+2. To avoid duplicate work wherever possible.
+3. To build idempotency checks on external system. (why not rely on external system? 1. Not necessary every system supports this. 2. Even if supported the timerange can exceed the issue duration)
+
+### Options
+
+#### Postgres
+1. Sharding to maintain data peak.
+2. SQL features provided but also schema limitation.
+3. Data cleanup needs to be configured.
+4. Transaction and ACID properties are out of the box.
+
+### Redis
+
+1. Fast read write.
+2. Need to maintain thread safety for racing writes.
+3. Cons - Not durable.
+
+### DynamoDb
+
+1. HashKey(external_system_id) and SortKey(tenant#record_id) can be used as schema.
+2. No SQL dependency.
+3. Handles race conditions using version control.
+4. Cons - Eventual consistency.
+5. Cons - AWS infra support needed.
+
+My choice here will be DDB as redis can lead to data loss which is not acceptable for sync db.
+
+## Config Service
+
+Used only for lookup
+Any db can be used here
+
+## Rate Limiter
+
+1. Need microseconds latency
+2. Every call translates to an update and lookup.
+
+### Algorithm
+
+1. Sliding window prevents misuse during corner windows.
+2. For the sake of simplicity - I will implement token bucket algo.
+
+Redis is the correct choice here as it is fastest data store.
+
+## Consumers (Group 1) (Topic - tenant , partition key = record_id)
 
 Each consumer will perform following steps : 
 1. Read from partition.
 2. Validate the record schema (FR) as per the metadata rules.
-3. Transform message into external system structure using the transformer service.
-4. A single record from internal systems can be sent to more than one external system.
-5. Send to external system queue.
+3. Fetch config for the record from the config store.
+4. A single record from internal systems can be sent to more than one external system. (Fan out)
+5. Based on config - call transform service to convert internal record into external system schema.
+6. Persist this data in sync db
+7. Write external system message to its topic in kafka 2.
+8. Once all external system messages are written - commit in kafka 1.
+9. Any validation / transformation error will be treated as terminal and sent to DLQ.
 
-### External system queue consumers
-These consumers will be sending data to external systems and need to maintain distributed rate limiting, circuit breaker.
-These also need to handle retry mechanism in case any system returns failure.
+## Consumers (Group 2) (Topic - tenant , partition key = external_system_id#record_id)
 
-1. Each consumer will read the message.
-2. Check circuit breaker
-3. Check rate limiter
-4. Send message to external system
-5. Store the ack back in a persistent store.
-
+Each consumer will perform following steps : 
+1. Read from partition.
+2. Validate the message as per external system schema.
+3. Check the state in sync db - if message sent to external system - commit to kafka topic.
+4. Check rate limiter for tenant_id#external_system_id -- if no quota - do not commit the message. If yes, continue with the steps.
+5. Persist the state in sync db before sending to external system.
+6. Send to external system.
+7. Based on response (parsed from transform service if needed) - persist in db.
+8. Commit to kafka topic.
