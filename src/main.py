@@ -1,89 +1,40 @@
 from __future__ import annotations
 
+from pathlib import Path
 import json
+import random
 import sys
 
-from pathlib import Path
-from typing import Any
-from src.errors import ValidationError, ConfigError, TransformError
-from src.domain import InboundMessage, TransformedMessage
-from src.config_loader import fetch_destinations
-from src.transformer import transform
-from src.validator import validate
+from src.errors import ValidationError, ConfigError
+from src.consumers.group1 import process_internal_message
+from src.consumers.group2 import process_consumer_group2_message
+from src.dao import SYNC_STATE
+from src.dlq import DLQ
 
 # Stub file paths — in real code these would be Kafka + a config service.
 STUB_DIR = Path(__file__).parent / "stubs"
 MESSAGE_FILE = STUB_DIR / "internal_message.json"
 CONFIG_FILE = STUB_DIR / "config.json"
 
-
-def commit_offset(msg: InboundMessage) -> None:
-    """In real impl: consumer.commit(). Here: print."""
-    print(f"  [kafka] commit event_id={msg.event_id}")
-
-
-def process_internal_message(raw_message: dict[str, Any], config: dict[str, Any])\
-        -> list[TransformedMessage]:
-    """
-    End-to-end processing of one inbound message. Returns the list of
-    transformed messages that would be published to per-provider Kafka.
-    """
-    # Validate
-    msg = validate(raw_message)
-    print(f"[validate] ok event_id={msg.event_id} tenant={msg.tenant_id} "
-          f"record={msg.record_id} op={msg.operation}")
-
-    # Fetch destination config
-    destinations = fetch_destinations(config, msg.tenant_id, msg.record_type)
-    print(f"[config] resolved {len(destinations)} destination(s) "
-          f"for tenant={msg.tenant_id} record_type={msg.record_type}")
-
-    if not destinations:
-        # No destinations configured for this record type.
-        # Still commit so we don't re-read this message.
-        commit_offset(msg)
-        return []
-
-    # Transform per destination (fan-out)
-    outputs: list[TransformedMessage] = []
-    for dest in destinations:
-        try:
-            transformed = transform(msg, dest)
-            outputs.append(transformed)
-            print(f"[transform] ok destination={transformed.destination_id} "
-                  f"provider={transformed.provider}")
-        except TransformError as e:
-            # In real impl: send this destination's attempt to DLQ, continue others.
-            print(f"[transform] FAILED destination={dest.get('destination_id')}: {e}")
-
-    # Commit offset to kafka
-    commit_offset(msg)
-
-    return outputs
-
+# ---------------------------------------------------------------------------
+# Main — runs both consumer groups back-to-back with stub inputs
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     # Load stub inputs.
     try:
         raw_message = json.loads(MESSAGE_FILE.read_text())
-    except FileNotFoundError:
-        print(f"ERROR: stub message file not found: {MESSAGE_FILE}", file=sys.stderr)
-        return 1
-    except json.JSONDecodeError as e:
-        print(f"ERROR: stub message is not valid JSON: {e}", file=sys.stderr)
-        return 1
-
-    try:
         config = json.loads(CONFIG_FILE.read_text())
-    except FileNotFoundError:
-        print(f"ERROR: stub config file not found: {CONFIG_FILE}", file=sys.stderr)
+    except FileNotFoundError as e:
+        print(f"ERROR: stub file not found: {e}", file=sys.stderr)
         return 1
     except json.JSONDecodeError as e:
-        print(f"ERROR: stub config is not valid JSON: {e}", file=sys.stderr)
+        print(f"ERROR: stub file is not valid JSON: {e}", file=sys.stderr)
         return 1
 
+    # Consumer Group 1: internal → per-destination transformed messages
     print("=" * 72)
-    print("First consumer stub — processing one message")
+    print("Consumer Group 1 — processing one internal message")
     print("=" * 72)
 
     try:
@@ -95,10 +46,25 @@ def main() -> int:
         print(f"[config] FAILED: {e} — would retry in real impl", file=sys.stderr)
         return 3
 
-    print("-" * 72)
-    print(f"Result: {len(outputs)} message(s) to publish to per-provider Kafka:")
+    print(f"\n→ {len(outputs)} transformed message(s) published to kafka2")
+
+    # Consumer Group 2: deliver each transformed message to its CRM
+    print("\n" + "=" * 72)
+    print("Consumer Group 2 — delivering transformed messages to external systems")
+    print("=" * 72)
+
+    random.seed(42)  # deterministic demo outcomes # comment this for different results
     for out in outputs:
-        print(json.dumps(out.__dict__))
+        process_consumer_group2_message(out)
+
+    # Final state snapshot
+    print("\n" + "-" * 72)
+    print(f"Sync state: {len(SYNC_STATE)} entries")
+    for (event_id, dest_id), state in SYNC_STATE.items():
+        print(f"  ({event_id}, {dest_id}) → {state}")
+    print(f"DLQ: {len(DLQ)} entries")
+    for entry in DLQ:
+        print(f"  {entry}")
 
     return 0
 

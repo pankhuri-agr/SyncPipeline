@@ -42,7 +42,7 @@ I am choosing Internal to External data sync process for this assignment. The fo
 4. Data is transformed between internal and external schemas before being written. The transformation layer is pluggable per-provider and per-direction.
 5. Operations on the same record must be applied to the destination in the order they occurred at the source. Operations on different records may be applied in parallel.
 6. External API rate limits are enforced per-tenant, per-provider. Without per-tenant scoping, one hot tenant would consume the shared quota and starve quieter tenants.
-7. Each sync operation is delivered exactly once in effect, even across retries, transient failures, and crash recovery. Duplicate submissions must not cause duplicate writes on the destination.
+7. Each sync operation is delivered at least once in effect, across retries, transient failures, and crash recovery. Few external systems should be able to handle duplicate writes on their own (using idempotency key) but for others at least once write is guaranteed. 
 8. All events entering the pipeline and all payloads sent to external systems are validated against predefined schemas. Validation failures are non-retryable.
 9. A single record change in the source can be configured to sync to multiple external CRMs, each with its own provider, schema transformation, and rate limit. Each destination is an independent delivery. This configuration is maintained as part of this service.
 
@@ -172,13 +172,13 @@ I am preferring option 1 due to tenant data isolation and straight forward imple
 
 ### DynamoDb
 
-1. HashKey(external_system_id) and SortKey(tenant#record_id) can be used as schema.
+1. HashKey(external_system_id) and SortKey(tenant#event_id) can be used as schema (single record can have multiple events).
 2. No SQL dependency.
 3. Handles race conditions using version control.
-4. Cons - Eventual consistency.
+4. Cons - Eventual consistency. Can be handled by setting consistent read = true.
 5. Cons - AWS infra support needed.
 
-My choice here will be DDB as redis can lead to data loss which is not acceptable for sync db.
+My choice here will be DDB (if cost is approved) as redis can lead to data loss which is not acceptable for sync db.
 
 ## Config Service
 
@@ -187,7 +187,7 @@ Any db can be used here
 
 ## Rate Limiter
 
-1. Need microseconds latency
+1. Need sub milliseconds latency
 2. Every call translates to an update and lookup.
 
 ### Algorithm
@@ -216,8 +216,14 @@ Each consumer will perform following steps :
 1. Read from partition.
 2. Validate the message as per external system schema.
 3. Check the state in sync db - if message sent to external system - commit to kafka topic.
-4. Check rate limiter for tenant_id#external_system_id -- if no quota - do not commit the message. If yes, continue with the steps.
+4. Check rate limiter for tenant_id#external_system_id -- if no quota - do not commit the message (since this consumer is for a external system - blocking until quota is refilled will not hurt). If yes, continue with the steps.
 5. Persist the state in sync db before sending to external system.
 6. Send to external system.
 7. Based on response (parsed from transform service if needed) - persist in db.
 8. Commit to kafka topic.
+
+### External system responses
+1. Success - Request accepted
+2. Failure - Request Failed (terminal) - move to DLQ.
+3. 429 / other transient errors - retry N times and then move to DLQ.
+4. If external system supports - it can return conflict detected status - which will block further messages for that record until conflict is resolved.
