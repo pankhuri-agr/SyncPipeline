@@ -16,19 +16,12 @@ def commit_offset_cg2(msg: TransformedMessage) -> None:
 def process_consumer_group2_message(msg: TransformedMessage) -> None:
     """
     Deliver one transformed message to its external system.
-
-    Pipeline:
-      1. Idempotency check — if already DELIVERED, skip and commit.
-      2. Rate limit acquire — if no quota, back off; do not commit.
-      3. Claim IN_FLIGHT — conditional state transition prevents races.
-      4. CRM send — mocked in this impl.
-      5. Classify outcome — uccess / retry / permanent.
-      6. Persist state + commit offset (or DLQ for permanent failures).
-
-    Returns nothing; side effects are on SYNC_STATE and DLQ.
     """
     ctx = f"event_id={msg.event_id} destination={msg.destination_id}"
     print(f"[cg2] received {ctx}")
+
+    # Add message validation - basic sanity
+    # check non null
 
     # Idempotency check
     state = sync_state_get(msg.event_id, msg.destination_id)
@@ -39,8 +32,7 @@ def process_consumer_group2_message(msg: TransformedMessage) -> None:
 
     # Rate limit acquire — per (tenant, provider).
     if not rate_limit_try_acquire(msg.tenant_id, msg.provider):
-        # Do NOT commit offset — the message stays on the partition and will
-        # be re-polled.
+        # Do NOT commit offset — the message stays on the partition and will be re-polled automatically.
         print(f"[rate_limit] no quota for tenant={msg.tenant_id} provider={msg.provider}; not committing  {ctx}")
         return
 

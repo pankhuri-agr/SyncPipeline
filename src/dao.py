@@ -4,10 +4,11 @@ from src.domain import TransformedMessage
 
 # Sync state: keyed by (event_id, destination_id). Values: PENDING | IN_FLIGHT
 # | DELIVERED | FAILED plus a version/attempt count.
+# for this assignment - I am keeping attempt count
 SYNC_STATE: dict[tuple[str, str], dict[str, Any]] = {}
 
 
-def sync_state_get(event_id: str, destination_id: str) -> dict[str, Any] | None:
+def sync_state_get(event_id, destination_id) -> dict[str, Any] | None:
     return SYNC_STATE.get((event_id, destination_id))
 
 def sync_state_claim(msg: TransformedMessage) -> bool:
@@ -22,7 +23,7 @@ def sync_state_claim(msg: TransformedMessage) -> bool:
     }
     return True
 
-def sync_state_mark(msg: TransformedMessage, status: str, **extra: Any) -> None:
+def sync_state_mark(msg: TransformedMessage, status: str, **extra) -> None:
     key = (msg.event_id, msg.destination_id)
     state = SYNC_STATE.get(key, {"attempts": 0})
     state["status"] = status

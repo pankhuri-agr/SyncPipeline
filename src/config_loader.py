@@ -9,12 +9,10 @@ def fetch_destinations(
 ) -> list[dict[str, Any]]:
     """
     Look up config and destination external systems for (tenant_id, record_type).
-    Returns a list of destination configs, each with at minimum {destination_id,
-     provider, field_map}.
+    Returns a list of destination configs, each with at minimum {destination_id, provider, field_map}.
 
     Raises ConfigError if the tenant has no routing config at all (distinct
-    from "tenant is configured to sync zero destinations," which is a valid
-    no-op and returns []).
+    from "tenant is configured to sync zero destinations," which is a valid case and returns []).
     """
     tenants_config = config.get("tenants")
     if not isinstance(tenants_config, dict):

@@ -53,7 +53,6 @@ def main() -> int:
     print("Consumer Group 2 — delivering transformed messages to external systems")
     print("=" * 72)
 
-    random.seed(42)  # deterministic demo outcomes # comment this for different results
     for out in outputs:
         process_consumer_group2_message(out)
 
